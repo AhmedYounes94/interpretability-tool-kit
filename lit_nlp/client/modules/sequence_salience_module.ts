@@ -12,6 +12,7 @@ import {styleMap} from 'lit/directives/style-map';
 import {computed, observable} from 'mobx';
 
 import {LitModule} from '../core/lit_module';
+import {LegendType} from '../elements/color_legend';
 import {canonicalizeGenerationResults, GeneratedTextResult, GENERATION_TYPES, getAllOutputTexts, getAllReferenceTexts} from '../lib/generated_text_utils';
 import {styles as sharedStyles} from '../lib/shared_styles.css';
 import {IndexedInput, ModelInfoMap, Spec} from '../lib/types';
@@ -360,29 +361,28 @@ export class SequenceSalienceModule extends LitModule {
     // clang-format on
   }
 
-  // TODO(b/198684817): move this colormap impl to a shared element?
   renderColorBlocks() {
     const cmap = this.cmap;
     const isSigned = (cmap instanceof SignedSalienceCmap);
-    const blockValues = isSigned ? [-1.0, -0.7, -0.3, 0.0, 0.3, 0.7, 1.0] :
-                                   [0.0, 0.2, 0.4, 0.6, 0.8, 1.0];
+    const labelName = "Token Salience";
+    let legendWidth = isSigned ? 300 : 250;
+    const footer =
+        this.shadowRoot!.querySelector<HTMLElement>('.module-footer');
+    if (footer && footer.clientWidth) {
+      legendWidth = footer.clientWidth / 3;
+    }
 
-    const blockClass = classMap({
-      'cmap-block': true,
-      'cmap-block-wide': isSigned,
-    });
-
-    const blocks = blockValues.map(val => {
-      const blockStyle = styleMap(
-          {'color': cmap.textCmap(val), 'background-color': cmap.bgCmap(val)});
-      // clang-format off
-      return html`
-        <div class=${blockClass} style=${blockStyle}>
-          ${val.toFixed(1)}
-        </div>`;
-      // clang-format on
-    });
-    return html`<div class='cmap-blocks-holder'>${blocks}</div>`;
+    // clang-format off
+    return html`
+        <color-legend legendType=${LegendType.SEQUENTIAL}
+          legendWidth=${legendWidth}
+          selectedColorName=${labelName}
+          .scale=${(val: number) => cmap.bgCmap(val)}
+          numBlocks=${isSigned ? 7 : 5}
+          minValue=${isSigned ? -1.0 : 0.0}
+          maxValue=1.0>
+        </color-legend>`;
+    // clang-format on
   }
 
   renderFooterControls() {
@@ -412,7 +412,6 @@ export class SequenceSalienceModule extends LitModule {
         </div>
       </div>
       <div class="controls-group">
-        <label>Colormap:</label>
         ${this.renderColorBlocks()}
         <label for="gamma-slider">Gamma:</label>
         <lit-slider min="0.25" max="6" step="0.25" val="${this.cmapGamma}"

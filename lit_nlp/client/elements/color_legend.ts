@@ -56,6 +56,8 @@ export class ColorLegend extends ReactiveElement {
   @observable @property({type: Number}) legendWidth = 150;
   @observable @property({type: String}) selectedColorName = '';
   @property({type: Number}) numBlocks?: number;
+  @property({type: Number}) maxValue?: number;
+  @property({type: Number}) minValue?: number;
 
   private fontFamily: string = '';
   private fontStyle: string = '';
@@ -193,10 +195,26 @@ export class ColorLegend extends ReactiveElement {
    * Render color legend for sequential legend type
    */
   private renderSequentialLegend() {
-    const numDomain = this.scale.domain() as number[];
-    const minValue = numDomain ? Math.min(...numDomain) : 0;
-    const maxValue = numDomain ? Math.max(...numDomain) : 0;
-    const domain = linearSpace(minValue, maxValue, this.numBlocks || 5);
+    /**
+     * If both minValue and maxValue are given, we use those values instead of
+     * getting the them from the domain.
+     */
+    let maxVal;
+    let minVal;
+
+    if (this.minValue === undefined || this.maxValue === undefined) {
+      const numDomain = this.scale?.domain() as number[];
+      if (numDomain === undefined) {
+        return null;
+      }
+      minVal = numDomain ? Math.min(...numDomain) : 0;
+      maxVal = numDomain ? Math.max(...numDomain) : 0;
+    } else {
+      maxVal = this.maxValue;
+      minVal = this.minValue;
+    }
+
+    const domain = linearSpace(minVal, maxVal, this.numBlocks || 5);
 
     const style = styleMap({'width': `${this.legendWidth}px`});
 
@@ -208,12 +226,12 @@ export class ColorLegend extends ReactiveElement {
             name="color-name">
             ${this.selectedColorName}
           </div>
-          <div class='legend-label'>${this.toStringValue(minValue)}</div>
+          <div class='legend-label'>${this.toStringValue(minVal)}</div>
           ${domain
             ? domain.map((val: number) =>
                 this.renderLegendBlock(this.toStringValue(val)))
             : null}
-          <div class='legend-label'>${this.toStringValue(maxValue)}</div>
+          <div class='legend-label'>${this.toStringValue(maxVal)}</div>
         </div>
         `;
     // clang-format on
@@ -232,7 +250,10 @@ export class ColorLegend extends ReactiveElement {
    */
   @computed
   private get fullLegendWidth(): number {
-    const domain = this.scale.domain();
+    const domain = this.scale?.domain();
+    if (domain === undefined) {
+      return 0;
+    }
     let textWidth = 0;  // label text width
 
     /**
