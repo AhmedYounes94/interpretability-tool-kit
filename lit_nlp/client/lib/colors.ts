@@ -65,6 +65,9 @@ const VIZ_COLOR_VALUES = [
 /** Names of colors in a VisColor palette */
 export type VizColorKey = typeof VIZ_COLOR_VALUES[number];
 
+/** Type alias for RGBA number tuples. */
+export type RGBATuple = [r: number, g: number, b: number, a: number];
+
 /**
  * Returns a ColorEntry at the index in th given palette.
  *
@@ -91,6 +94,34 @@ function at (palette:ColorEntry[], index:number): ColorEntry {
  */
 export function ramp (range:string[]): (t:number) => string {
   return d3.interpolateRgbBasis(range);
+}
+
+/** Converts a hex color to an RGBA tuple. Alpha defaults to 1. */
+export function hexToRGBA(hex: string): RGBATuple {
+  let rgba: RGBATuple = [0, 0, 0, 1];
+  const RGBA_2_CHAR = /[A-Fa-f0-9]{2}/g;
+
+  // Needed to parse hex-color values.
+  // tslint:disable:ban
+  if (hex.length > 2 && /^#?[A-Fa-f0-9]{3,4}$/.test(hex)) {
+    const components = hex.match(/[A-Fa-f0-9]/g)!.map(
+        d => parseInt(`${d}${d}`, 16));
+    if (components.length === 4) {
+      rgba = components as RGBATuple;
+    } else {
+      rgba = [...components, 1] as RGBATuple;
+    }
+  } else if (hex.length > 5 && /^#?[A-Fa-f0-9]{6}$/.test(hex)) {
+    const [r, g, b] = hex.match(RGBA_2_CHAR)!.map(d => parseInt(d, 16));
+    rgba = [r, g, b, 1];
+  } else if (hex.length > 7 && /^#?[A-Fa-f0-9]{8}$/.test(hex)) {
+    rgba = hex.match(RGBA_2_CHAR)!.map(d => parseInt(d, 16)) as RGBATuple;
+  // tslint:enable:ban
+  } else {
+    throw new RangeError(`Cannot parse invalid hex-color string: ${hex}`);
+  }
+
+  return rgba;
 }
 
 /**

@@ -31,7 +31,8 @@ import {
   CATEGORICAL_NORMAL,
   CYEA_DISCRETE, MAGE_DISCRETE, CYEA_CONTINUOUS, MAGE_CONTINUOUS,
   DIVERGING_4, DIVERGING_5, DIVERGING_6,
-  labBrandColors, labVizColors
+  labBrandColors, labVizColors,
+  hexToRGBA, RGBATuple
 } from './colors';
 
 const STANDARD_COLOR_VALUE_NAMES: ColorValue[] = [ '50', '500', '600', '700' ];
@@ -318,5 +319,45 @@ describe('Pre-baked Colors, Palettes, and Ramps Test', () => {
     expect(mageCyeaLAB.length).toEqual(256);
     expect(mageCyeaLAB[0]).toEqual('rgb(71, 0, 70)');
     expect(mageCyeaLAB[mageCyeaLAB.length - 1]).toEqual('rgb(4, 30, 53)');
+  });
+});
+
+describe('hexToRGBA test', () => {
+  it('parses valid hex strings to their corresponding RGBA tuples', () => {
+    const values: Array<[string, RGBATuple]> = [
+      ['#abc', [170, 187, 204, 1]],     // Valid 3-digit hex-color with hash
+      ['abc', [170, 187, 204, 1]],      // Valid 3-digit hex-color without hash
+      ['#abc0', [170, 187, 204, 0]],    // Valid 4-digit hex-color with hash
+      ['abc0', [170, 187, 204, 0]],     // Valid 4-digit hex-color without hash
+      ['#2ca25f', [44, 162, 95, 1]],    // Valid 6-digit hex-color with hash
+      ['2ca25f', [44, 162, 95, 1]],     // Valid 6-digit hex-color without hash
+      ['#2ca25f00', [44, 162, 95, 0]],  // Valid 8-digit hex-color with hash
+      ['2ca25f00', [44, 162, 95, 0]],   // Valid 8-digit hex-color without hash
+    ];
+
+    for (const [hex, expected] of values) {
+      expect(hexToRGBA(hex)).toEqual(expected);
+    }
+  });
+
+  it('throws a RangeError if parsing an invalid hex string', () => {
+    const values = [
+      '#00',          // Invalid 2-digit hex-color with hash
+      '00',           // Invalid 2-digit hex-color without hash
+      '#0000000',     // Invalid 7-digit hex-color with hash
+      '0000000',      // Invalid 7-digit hex-color without hash
+      '#000000000',   // Invalid 9-digit hex-color with hash
+      '000000000',    // Invalid 9-digit hex-color without hash
+      '#weak',        // Invalid characters in hex-color with hash
+      'weak',         // Invalid characters in hex-color without hash
+    ];
+
+    const getError = (hex: string) => {
+      return new RangeError(`Cannot parse invalid hex-color string: ${hex}`);
+    };
+
+    for (const hex of values) {
+      expect(() => hexToRGBA(hex)).toThrow(getError(hex));
+    }
   });
 });

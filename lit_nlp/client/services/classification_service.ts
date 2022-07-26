@@ -24,7 +24,8 @@ import {FacetedData, GroupedExamples, Spec} from '../lib/types';
 import {LitService} from './lit_service';
 import {AppState} from './state_service';
 
-const GLOBAL_FACET = '';
+/** Identifier for the default facet. */
+export const GLOBAL_FACET = '';
 
 /**
  * A margin setting is the margin value and the facet information for which
@@ -124,8 +125,7 @@ export class ClassificationService extends LitService {
             fieldSpec.null_idx != null && fieldSpec.vocab != null) {
           marginSettings[model][fieldName] = {};
 
-          if (model in this.marginSettings &&
-              this.marginSettings[model][fieldName] != null) {
+          if (this.marginSettings[model]?.[fieldName] != null) {
             // Reset all facets to margin = 0.
             const facets = Object.keys(this.marginSettings[model][fieldName]);
             for (const key of facets) {
