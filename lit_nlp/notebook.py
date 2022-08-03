@@ -115,6 +115,10 @@ class LitWidget(object):
     if render:
       self.render()
 
+  @property
+  def ui_state(self):
+    return self._server.app.ui_state_tracker.state
+
   def stop(self):
     """Stop the LIT server."""
     self._server.stop()

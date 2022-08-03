@@ -44,6 +44,7 @@ from lit_nlp.components import projection
 from lit_nlp.components import regression_results
 from lit_nlp.components import salience_clustering
 from lit_nlp.components import scrambler
+from lit_nlp.components import selection_state
 from lit_nlp.components import shap_explainer
 from lit_nlp.components import tcav
 from lit_nlp.components import thresholder
@@ -427,6 +428,7 @@ class LitApp(object):
       inline_doc: Optional[str] = None,
       onboard_start_doc: Optional[str] = None,
       onboard_end_doc: Optional[str] = None,
+      sync_state: bool = False,  # notebook-only; not in server_flags
   ):
     if client_root is None:
       raise ValueError('client_root must be set on application')
@@ -526,6 +528,11 @@ class LitApp(object):
     self._interpreters = dict(**self._interpreters,
                               **prediction_analysis_interpreters,
                               **embedding_based_interpreters)
+
+    # Component to sync state from TS -> Python. Used in notebooks.
+    if sync_state:
+      self.ui_state_tracker = selection_state.SelectionStateTracker()
+      self._interpreters['_sync_state'] = self.ui_state_tracker
 
     # Information on models, datasets, and other components.
     self._info = self._build_metadata()

@@ -162,6 +162,10 @@ class Dataset(object):
       examples = list(self.examples)
     return Dataset(examples=examples, base=self)
 
+  def filter(self, predicate: Callable[[JsonDict], bool]):
+    selected_examples = list(filter(predicate, self.examples))
+    return Dataset(examples=selected_examples, base=self)
+
   def shuffle(self, seed=42):
     """Return a new dataset with randomized example order."""
     # random.shuffle will shuffle in-place; use sample to make a new list.
@@ -213,6 +217,18 @@ class IndexedDataset(Dataset):
     else:
       self._indexed_examples = self.index_inputs(self._examples)
     self._index = {ex['id']: ex for ex in self._indexed_examples}
+
+  @property
+  def slice(self):
+    """Syntactic sugar, allows .slice[i:j] to return a new IndexedDataset."""
+
+    def _slicer(slice_obj):
+      return IndexedDataset(
+          indexed_examples=self.indexed_examples[slice_obj],
+          id_fn=self.id_fn,
+          base=self)
+
+    return SliceWrapper(_slicer)
 
   @classmethod
   def index_all(cls, datasets: Mapping[str, Dataset], id_fn: IdFnType):
