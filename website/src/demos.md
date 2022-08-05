@@ -3,7 +3,7 @@ title: LIT - Demos
 layout: layouts/sub.liquid
 
 hero-image: /assets/images/LIT_Demos_Banner.png
-hero-title: "Take the Language Interpretability Tool for a spin!"
+hero-title: "Take the Learning Interpretability Tool for a spin!"
 hero-copy: "Get a feel for LIT in a variety of hosted demos."
 
 color: "#49596c"
