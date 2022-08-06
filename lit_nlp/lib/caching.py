@@ -19,7 +19,7 @@ import hashlib
 import os
 import pickle
 import threading
-from typing import Text, Optional, Union, Any, List, Tuple
+from typing import Text, Optional, Union, Any, List, Tuple, Callable, Iterable
 
 from absl import logging
 
@@ -30,6 +30,8 @@ from lit_nlp.lib import serialize
 JsonDict = types.JsonDict
 Input = types.Input
 IndexedInput = types.IndexedInput
+
+ProgressIndicator = Callable[[Iterable], Iterable]
 
 # Compound keys: (dataset_name, example_id)
 # None is used as a sentinel to skip the cache.
@@ -242,10 +244,12 @@ class CachingModelWrapper(lit_model.ModelWrapper):
     with self._cache.lock:
       return [self._cache.get(input_key) for input_key in input_keys]
 
-  def _predict_with_metadata(self,
-                             indexed_inputs: List[JsonDict],
-                             dataset_name: Optional[Text] = None,
-                             **kw) -> List[JsonDict]:
+  def _predict_with_metadata(
+      self,
+      indexed_inputs: List[JsonDict],
+      dataset_name: Optional[Text] = None,
+      progress_indicator: Optional[ProgressIndicator] = lambda x: x,
+      **kw) -> List[JsonDict]:
     """As predict(), but inputs are IndexedInput."""
     # TODO(lit-dev): consider moving this to example level
     # (null keys skip cache), and removing this codepath.
@@ -278,7 +282,8 @@ class CachingModelWrapper(lit_model.ModelWrapper):
       return results
 
     with self._cache.get_pred_lock(input_keys):
-      model_preds = list(self.wrapped.predict_with_metadata(misses))
+      model_preds = list(
+          self.wrapped.predict_with_metadata(progress_indicator(misses)))
       logging.info("Received %d predictions from model", len(model_preds))
       assert len(model_preds) == len(
           misses

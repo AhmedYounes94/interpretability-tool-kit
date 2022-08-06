@@ -19,7 +19,7 @@ import glob
 import os
 import random
 import time
-from typing import Optional, Text, List, Mapping, Sequence, Union
+from typing import Optional, Mapping, Sequence, Union, Callable, Iterable
 
 from absl import logging
 
@@ -44,6 +44,7 @@ from lit_nlp.components import projection
 from lit_nlp.components import regression_results
 from lit_nlp.components import salience_clustering
 from lit_nlp.components import scrambler
+from lit_nlp.components import selection_state
 from lit_nlp.components import shap_explainer
 from lit_nlp.components import tcav
 from lit_nlp.components import thresholder
@@ -53,325 +54,7 @@ from lit_nlp.lib import caching
 from lit_nlp.lib import serialize
 from lit_nlp.lib import utils
 from lit_nlp.lib import wsgi_app
-
-JsonDict = types.JsonDict
-Input = types.Input
-IndexedInput = types.IndexedInput
-
-# Export this symbol, for access from demo.py
-PredsCache = caching.PredsCache
-
-
-class LitApp(object):
-  """LIT WSGI application."""
-
-  def _build_metadata(self):
-    """Build metadata from model and dataset specs."""
-    model_info = {}
-    for name, m in self._models.items():
-      mspec: lit_model.ModelSpec = m.spec()
-      info = {}
-      info['spec'] = {'input': mspec.input, 'output': mspec.output}
-      # List compatible datasets.
-      info['datasets'] = [
-          dname for dname, ds in self._datasets.items()
-          if mspec.is_compatible_with_dataset(ds.spec())
-      ]
-      if len(info['datasets']) == 0:  # pylint: disable=g-explicit-length-test
-        logging.error("Error: model '%s' has no compatible datasets!", name)
-      info['generators'] = [
-          name for name, gen in self._generators.items() if gen.is_compatible(m)
-      ]
-      info['interpreters'] = [
-          name for name, interp in self._interpreters.items()
-          if interp.is_compatible(m)
-      ]
-      info['description'] = m.description()
-      model_info[name] = info
-
-    dataset_info = {}
-    for name, ds in self._datasets.items():
-      dataset_info[name] = {
-          'spec': ds.spec(),
-          'description': ds.description(),
-          'size': len(ds),
-      }
-
-    generator_info = {}
-    for name, gen in self._generators.items():
-      generator_info[name] = {
-          'configSpec': gen.config_spec(),
-          'metaSpec': gen.meta_spec(),
-          'description': gen.description()
-      }
-
-    interpreter_info = {}
-    for name, interpreter in self._interpreters.items():
-      interpreter_info[name] = {
-          'configSpec': interpreter.config_spec(),
-          'metaSpec': interpreter.meta_spec(),
-          'description': interpreter.description()
-      }
-
-    return {
-        # Component info and specs
-        'models': model_info,
-        'datasets': dataset_info,
-        'generators': generator_info,
-        'interpreters': interpreter_info,
-        'layouts': self._layouts,
-        # Global configuration
-        'demoMode': self._demo_mode,
-        'defaultLayout': self._default_layout,
-        'canonicalURL': self._canonical_url,
-        'pageTitle': self._page_title,
-        'inlineDoc': self._inline_doc,
-        'onboardStartDoc': self._onboard_start_doc,
-        'onboardEndDoc': self._onboard_end_doc,
-    }
-
-  def _get_model_spec(self, name: Text):
-    return self._info['models'][name]['spec']
-
-  def _get_info(self, unused_data, **unused_kw):
-    """Get model info and send to frontend."""
-    return self._info
-
-  def _reconstitute_inputs(self, inputs: Sequence[Union[IndexedInput, str]],
-                           dataset_name: str) -> List[IndexedInput]:
-    """Reconstitute any inputs sent as references (bare IDs)."""
-    index = self._datasets[dataset_name].index
-    # TODO(b/178228238): set up proper debug logging and hide this by default.
-    num_aliased = sum([isinstance(ex, str) for ex in inputs])
-    logging.info(
-        "%d of %d inputs sent as IDs; reconstituting from dataset '%s'",
-        num_aliased, len(inputs), dataset_name)
-    return [index[ex] if isinstance(ex, str) else ex for ex in inputs]
-
-  def _predict(self, inputs: List[JsonDict], model_name: Text,
-               dataset_name: Optional[Text]):
-    """Run model predictions."""
-    return list(self._models[model_name].predict_with_metadata(
-        inputs, dataset_name=dataset_name))
-
-  def _save_datapoints(self, data, dataset_name: Text, path: Text, **unused_kw):
-    """Save datapoints to disk."""
-    if self._demo_mode:
-      logging.warn('Attempted to save datapoints in demo mode.')
-      return None
-    return self._datasets[dataset_name].save(data['inputs'], path)
-
-  def _load_datapoints(self, unused_data, dataset_name: Text, path: Text,
-                       **unused_kw):
-    """Load datapoints from disk."""
-    if self._demo_mode:
-      logging.warn('Attempted to load datapoints in demo mode.')
-      return None
-    dataset = self._datasets[dataset_name].load(path)
-    return dataset.indexed_examples
-
-  def _get_preds(self,
-                 data,
-                 model: Text,
-                 dataset_name: Optional[Text] = None,
-                 requested_types: Text = 'LitType',
-                 **unused_kw):
-    """Get model predictions.
-
-    Args:
-      data: data payload, containing 'inputs' field
-      model: name of the model to run
-      dataset_name: name of the active dataset
-      requested_types: optional, comma-separated list of types to return
-
-    Returns:
-      List[JsonDict] containing requested fields of model predictions
-    """
-    preds = self._predict(data['inputs'], model, dataset_name)
-
-    # Figure out what to return to the frontend.
-    output_spec = self._get_model_spec(model)['output']
-    requested_types = requested_types.split(',')
-    logging.info('Requested types: %s', str(requested_types))
-    ret_keys = []
-    for t_name in requested_types:
-      t_class = getattr(types, t_name, None)
-      assert issubclass(
-          t_class, types.LitType), f"Class '{t_name}' is not a valid LitType."
-      ret_keys.extend(utils.find_spec_keys(output_spec, t_class))
-    ret_keys = set(ret_keys)  # de-dupe
-
-    # Return selected keys.
-    logging.info('Will return keys: %s', str(ret_keys))
-    # One record per input.
-    ret = [utils.filter_by_keys(p, ret_keys.__contains__) for p in preds]
-    return ret
-
-  def _annotate_new_data(self,
-                         data,
-                         dataset_name: Optional[Text] = None,
-                         **unused_kw) -> List[IndexedInput]:
-    """Fill in index and other extra data for the provided datapoints."""
-    # TODO(lit-dev): unify this with hash fn on dataset objects.
-    assert dataset_name is not None, 'No dataset specified.'
-
-    # Generate annotated versions of new datapoints.
-    dataset = self._datasets[dataset_name]
-    input_examples = [example['data'] for example in data['inputs']]
-    dataset_to_annotate = lit_dataset.Dataset(
-        base=dataset, examples=input_examples)
-    annotated_dataset = self._run_annotators(dataset_to_annotate)
-
-    # Add annotations and IDs to new datapoints.
-    for i, example in enumerate(data['inputs']):
-      example['data'] = annotated_dataset.examples[i]
-      example['id'] = caching.input_hash(example['data'])
-
-    return data['inputs']
-
-  def _get_dataset(self,
-                   unused_data,
-                   dataset_name: Optional[Text] = None,
-                   **unused_kw):
-    """Attempt to get dataset, or override with a specific path."""
-    return self._datasets[dataset_name].indexed_examples
-
-  def _create_dataset(self,
-                      unused_data,
-                      dataset_name: Optional[Text] = None,
-                      dataset_path: Optional[Text] = None,
-                      **unused_kw):
-    """Create dataset from a path, updating and returning the metadata."""
-
-    assert dataset_name is not None, 'No dataset specified.'
-    assert dataset_path is not None, 'No dataset path specified.'
-    new_dataset = self._datasets[dataset_name].load(dataset_path)
-    if new_dataset is not None:
-      new_dataset_name = dataset_name + '-' + os.path.basename(dataset_path)
-      self._datasets[new_dataset_name] = new_dataset
-      self._info = self._build_metadata()
-      return (self._info, new_dataset_name)
-    else:
-      return None
-
-  def _create_model(self,
-                    unused_data,
-                    model_name: Optional[Text] = None,
-                    model_path: Optional[Text] = None,
-                    **unused_kw):
-    """Create model from a path, updating and returning the metadata."""
-
-    assert model_name is not None, 'No model specified.'
-    assert model_path is not None, 'No model path specified.'
-    # Load using the underlying model class, then wrap explicitly in a cache.
-    new_model = self._models[model_name].wrapped.load(model_path)
-    if new_model is not None:
-      new_model_name = model_name + ':' + os.path.basename(model_path)
-      self._models[new_model_name] = caching.CachingModelWrapper(
-          new_model, new_model_name, cache_dir=self._data_dir)
-      self._info = self._build_metadata()
-      return (self._info, new_model_name)
-    else:
-      return None
-
-  def _get_generated(self, data, model: Text, dataset_name: Text,
-                     generator: Text, **unused_kw):
-    """Generate new datapoints based on the request."""
-    generator_name = generator
-    generator: lit_components.Generator = self._generators[generator_name]
-    dataset = self._datasets[dataset_name]
-    # Nested list, containing generated examples from each input.
-    all_generated: List[List[Input]] = generator.run_with_metadata(
-        data['inputs'], self._models[model], dataset, config=data.get('config'))
-
-    # Annotate datapoints
-    def annotate_generated(datapoints):
-      dataset_to_annotate = lit_dataset.Dataset(
-          base=dataset, examples=datapoints)
-      annotated_dataset = self._run_annotators(dataset_to_annotate)
-      return annotated_dataset.examples
-
-    annotated_generated = [
-        annotate_generated(generated) for generated in all_generated
-    ]
-
-    # Add metadata.
-    all_generated_indexed: List[List[IndexedInput]] = [
-        dataset.index_inputs(generated) for generated in annotated_generated
-    ]
-    for parent, indexed_generated in zip(data['inputs'], all_generated_indexed):
-      for generated in indexed_generated:
-        generated['meta'].update({
-            'parentId': parent['id'],
-            'source': generator_name,
-            'added': True,
-        })
-    return all_generated_indexed
-
-  def _get_interpretations(self, data, model: Text, dataset_name: Text,
-                           interpreter: Text, **unused_kw):
-    """Run an interpretation component."""
-    interpreter = self._interpreters[interpreter]
-    # Pre-compute using self._predict, which looks for cached results.
-    if model:
-      assert model in self._models, f"Model '{model}' is not a valid model."
-      model_outputs = self._predict(data['inputs'], model, dataset_name)
-      model = self._models[model]
-    else:
-      model_outputs = None
-      model = None
-
-    return interpreter.run_with_metadata(
-        data['inputs'],
-        model,
-        self._datasets[dataset_name],
-        model_outputs=model_outputs,
-        config=data.get('config'))
-
-  def _warm_start(self, rate: float):
-    """Warm-up the predictions cache by making some model calls."""
-    assert rate >= 0 and rate <= 1
-    for model, model_info in self._info['models'].items():
-      for dataset_name in model_info['datasets']:
-        logging.info("Warm-start of model '%s' on dataset '%s'", model,
-                     dataset_name)
-        full_dataset = self._get_dataset([], dataset_name)
-        if rate < 1:
-          dataset = random.sample(full_dataset, int(len(full_dataset) * rate))
-          logging.info('Partial warm-start: running on %d/%d examples.',
-                       len(dataset), len(full_dataset))
-        else:
-          dataset = full_dataset
-        _ = self._get_preds({'inputs': dataset}, model, dataset_name)
-
-  def _warm_projections(self, interpreters: List[Text]):
-    """Pre-compute UMAP/PCA projections with default arguments."""
-    for model, model_info in self._info['models'].items():
-      for dataset_name in model_info['datasets']:
-        embedding_fields = utils.find_spec_keys(model_info['spec']['output'],
-                                                types.Embeddings)
-        # Only warm-start on the first embedding field, since if models return
-        # many different embeddings this can take a long time.
-        for field_name in embedding_fields[:1]:
-          config = dict(
-              dataset_name=dataset_name,
-              model_name=model,
-              field_name=field_name,
-              use_input=False,
-              proj_kw={'n_components': 3})
-          data = {'inputs': [], 'config': config}
-          for interpreter_name in interpreters:
-            _ = self._get_interpretations(
-                data, model, dataset_name, interpreter=interpreter_name)
-
-  def _run_annotators(self,
-                      dataset: lit_dataset.Dataset) -> lit_dataset.Dataset:
-    datapoints = [dict(ex) for ex in dataset.examples]
-    annotated_spec = dict(dataset.spec())
-    for annotator in self._annotators:
-      annotator.annotate(datapoints, dataset, annotated_spec)
-    return lit_dataset.Dataset(
-        base=dataset, examples=datapoints, spec=annotated_spec)
+import tqdm
 
   def make_handler(self, fn):
     """Convenience wrapper to handle args and serialization.
@@ -408,17 +91,19 @@ class LitApp(object):
 
   def __init__(
       self,
-      models: Mapping[Text, lit_model.Model],
-      datasets: Mapping[Text, lit_dataset.Dataset],
-      generators: Optional[Mapping[Text, lit_components.Generator]] = None,
-      interpreters: Optional[Mapping[Text, lit_components.Interpreter]] = None,
-      annotators: Optional[List[lit_components.Annotator]] = None,
+      models: Mapping[str, lit_model.Model],
+      datasets: Mapping[str, lit_dataset.Dataset],
+      generators: Optional[Mapping[str, lit_components.Generator]] = None,
+      interpreters: Optional[Mapping[str, lit_components.Interpreter]] = None,
+      annotators: Optional[list[lit_components.Annotator]] = None,
       layouts: Optional[layout.LitComponentLayouts] = None,
       # General server config; see server_flags.py.
-      data_dir: Optional[Text] = None,
+      data_dir: Optional[str] = None,
       warm_start: float = 0.0,
+      warm_start_progress_indicator: Optional[ProgressIndicator] = tqdm
+      .tqdm,  # not in server_flags
       warm_projections: bool = False,
-      client_root: Optional[Text] = None,
+      client_root: Optional[str] = None,
       demo_mode: bool = False,
       default_layout: Optional[str] = None,
       canonical_url: Optional[str] = None,
@@ -427,6 +112,7 @@ class LitApp(object):
       inline_doc: Optional[str] = None,
       onboard_start_doc: Optional[str] = None,
       onboard_end_doc: Optional[str] = None,
+      sync_state: bool = False,  # notebook-only; not in server_flags
   ):
     if client_root is None:
       raise ValueError('client_root must be set on application')
@@ -442,6 +128,8 @@ class LitApp(object):
     if data_dir and not os.path.isdir(data_dir):
       os.mkdir(data_dir)
 
+    print(f'{time.time()} App initializing...')
+
     # TODO(lit-dev): override layouts instead of merging, to allow clients
     # to opt-out of the default bundled layouts. This will require updating
     # client code to manually merge when this is the desired behavior.
@@ -454,6 +142,8 @@ class LitApp(object):
     }
 
     self._datasets = dict(datasets)
+    # TODO(b/202210900): get rid of this, just dynamically create the empty
+    # dataset on the frontend.
     self._datasets['_union_empty'] = lit_dataset.NoneDataset(self._models)
 
     self._annotators = annotators or []
@@ -527,6 +217,11 @@ class LitApp(object):
                               **prediction_analysis_interpreters,
                               **embedding_based_interpreters)
 
+    # Component to sync state from TS -> Python. Used in notebooks.
+    if sync_state:
+      self.ui_state_tracker = selection_state.SelectionStateTracker()
+      self._interpreters['_sync_state'] = self.ui_state_tracker
+
     # Information on models, datasets, and other components.
     self._info = self._build_metadata()
 
@@ -539,7 +234,8 @@ class LitApp(object):
       warm_start = 1.0
 
     if warm_start > 0:
-      self._warm_start(rate=warm_start)
+      self._warm_start(
+          rate=warm_start, progress_indicator=warm_start_progress_indicator)
       self.save_cache()
       if warm_start >= 1:
         warm_projections = True

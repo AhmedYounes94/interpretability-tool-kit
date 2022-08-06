@@ -17,7 +17,7 @@
 
 // Import Services
 // Import and add injection functionality to LitModule
-import {toJS} from 'mobx';
+import {autorun, toJS} from 'mobx';
 
 import {Constructor} from '../lib/types';
 import {ApiService} from '../services/api_service';
@@ -84,6 +84,19 @@ export class LitApp {
     // Enabling comparison mode if a datapoint has been pinned
     if (pinnedSelectionService.primarySelectedId) {
       appState.compareExamplesEnabled = true;
+    }
+
+    // If enabled, set up state syncing back to Python.
+    if (appState.metadata.interpreters['_sync_state'] != null) {
+      autorun(() => {
+        apiService.getInterpretations(
+            selectionService.selectedInputData, '', appState.currentDataset,
+            '_sync_state', {
+              'primary': selectionService.primarySelectedId,
+              'pinned': pinnedSelectionService.primarySelectedId
+            },
+            'Syncing selection state.');
+      });
     }
   }
 
